@@ -1,108 +1,232 @@
-# music-player
+# Music Player
 
-A self-hosted **audio-only download API**. Paste a YouTube share link, get back a
-playable audio file and a persistent library your mobile app can stream, search
-and cache.
+A self-hosted, audio-only music library and streaming API built with Java and Spring Boot.
 
-Built for one job: replace a music subscription with your own library, without
-paying per month and without managing servers beyond a single process.
+The service accepts YouTube URLs, downloads the corresponding audio through `yt-dlp`, stores it in a persistent local library, and exposes a REST API for downloading, searching, streaming, and managing tracks.
 
----
+It is designed for personal deployments and mobile music-player applications where the backend should run as a single, self-contained service without subscription-based infrastructure.
 
-## How it works, and why
+## Features
 
-YouTube's internals (player JS, cipher signatures, format manifests) change
-constantly. Reimplementing them is a losing battle. So this service does not try.
-It **wraps [`yt-dlp`](https://github.com/yt-dlp/yt-dlp)** — the community tool
-that stays current — and puts a proper application around it:
+* YouTube URL and share-link parsing
+* Audio extraction through `yt-dlp`
+* M4A and MP3 output
+* Persistent local music library
+* Track metadata extraction
+* Download progress tracking
+* Download retry and cancellation
+* Search by title, artist, and album
+* HTTP byte-range streaming
+* Artwork caching
+* REST API with consistent JSON error responses
+* Idempotent download requests
+* H2 file-based database
+* Automatic recovery of interrupted downloads
+* Configurable download concurrency and timeouts
+* Security-focused URL and filesystem validation
+* No external database server required
 
-- tolerant link parsing (real share-sheet input, not just clean URLs)
-- metadata resolution before the response returns
-- live progress reporting
-- a persistent, searchable library
-- HTTP byte-range streaming that mobile players actually accept
+## Architecture
 
-The trade-off is honest: you depend on an external binary. In exchange you get
-software that keeps working when YouTube changes something.
+The application deliberately avoids implementing YouTube's extraction logic itself.
 
----
+YouTube's player implementation, signatures, manifests, and delivery mechanisms change frequently. Maintaining a custom extractor would therefore introduce significant maintenance overhead.
+
+Instead, the service delegates media extraction to [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) and provides an application layer around it.
+
+The backend is responsible for:
+
+1. Validating and normalizing incoming URLs.
+2. Resolving video metadata.
+3. Managing download jobs.
+4. Tracking download state and progress.
+5. Persisting the music library.
+6. Managing downloaded files and artwork.
+7. Providing searchable library endpoints.
+8. Serving audio through HTTP range requests.
+9. Providing consistent API responses and error handling.
+
+This approach keeps the application focused on library management and media delivery while allowing `yt-dlp` to handle the continuously changing YouTube extraction layer.
+
+## Technology Stack
+
+| Component        | Technology          |
+| ---------------- | ------------------- |
+| Language         | Java 21+            |
+| Framework        | Spring Boot         |
+| Build Tool       | Maven 3.9+          |
+| Database         | H2                  |
+| Media Extraction | yt-dlp              |
+| Audio Processing | FFmpeg              |
+| Persistence      | JPA / Hibernate     |
+| API              | REST / JSON         |
+| Streaming        | HTTP Range Requests |
 
 ## Requirements
 
-| | |
-|---|---|
-| JDK | 21+ (built and tested on 25) |
-| Maven | 3.9+ |
-| Python | 3.9+ (only to provide `yt-dlp`) |
-| ffmpeg **and** ffprobe | only for MP3; **not needed for M4A** |
+| Requirement | Version / Details |
+| ----------- | ----------------- |
+| JDK         | 21+               |
+| Maven       | 3.9+              |
+| Python      | 3.9+              |
+| yt-dlp      | Required          |
+| FFmpeg      | Required for MP3  |
+| FFprobe     | Required for MP3  |
 
-### Install the tools
+The project is built and tested with JDK 25.
+
+M4A downloads do not require FFmpeg because the audio stream can be stored without re-encoding.
+
+MP3 downloads require both `ffmpeg` and `ffprobe` for post-processing.
+
+## Installation
+
+### 1. Install yt-dlp
+
+Using Python:
 
 ```bash
-# yt-dlp (required)
 pip install -U yt-dlp
-# or: winget install yt-dlp.yt-dlp
-
-# ffmpeg + ffprobe (optional, needed only for MP3)
-winget install Gyan.FFmpeg
-# or: choco install ffmpeg
 ```
 
-Both are **auto-detected** at startup. If you keep them somewhere unusual, point
-the app at them:
+Windows:
 
 ```bash
-export APP_TOOLS_FFMPEG_PATH=/opt/ffmpeg/bin   # the directory holding both executables
+winget install yt-dlp.yt-dlp
+```
+
+### 2. Install FFmpeg
+
+FFmpeg is only required when MP3 output is enabled.
+
+Windows:
+
+```bash
+winget install Gyan.FFmpeg
+```
+
+or:
+
+```bash
+choco install ffmpeg
+```
+
+The installation must provide both:
+
+```text
+ffmpeg
+ffprobe
+```
+
+A standalone `ffmpeg` executable without `ffprobe` is not sufficient for MP3 processing.
+
+For example, the `imageio-ffmpeg` Python package does not satisfy this requirement because it provides FFmpeg under a versioned executable name but does not provide `ffprobe`.
+
+### 3. Verify the installation
+
+The application exposes a diagnostic endpoint:
+
+```bash
+curl http://localhost:8080/api/v1/system/diagnostics
+```
+
+Example response:
+
+```json
+{
+  "ytDlp": "yt-dlp",
+  "hasFfmpeg": true,
+  "hasFfprobe": true,
+  "mp3Available": true
+}
+```
+
+## Configuration
+
+The application automatically searches for `yt-dlp` and FFmpeg on the system `PATH`.
+
+If the tools are installed in non-standard locations, configure them explicitly.
+
+Linux/macOS:
+
+```bash
+export APP_TOOLS_FFMPEG_PATH=/opt/ffmpeg/bin
 export APP_TOOLS_YT_DLP_PATH=/usr/local/bin/yt-dlp
 ```
 
-> **MP3 needs `ffprobe` too.** yt-dlp uses it for post-processing, so a lone
-> `ffmpeg` binary is not enough. The bundled Python wheel `imageio-ffmpeg` ships
-> `ffmpeg` under a versioned name and no `ffprobe`, so it does **not** satisfy
-> the MP3 path. `/api/v1/system/diagnostics` tells you the truth:
+The FFmpeg path should point to the directory containing both `ffmpeg` and `ffprobe`.
 
-```json
-{ "ytDlp": "yt-dlp", "hasFfmpeg": true, "hasFfprobe": false, "mp3Available": false }
-```
+## Running the Application
 
----
-
-## Run
+### Development
 
 ```bash
 mvn spring-boot:run
-# or build a single self-contained jar
+```
+
+### Build
+
+```bash
 mvn clean package
+```
+
+### Run the packaged JAR
+
+```bash
 java -jar target/music-player-1.0.0-SNAPSHOT.jar
 ```
 
-API on `http://localhost:8080`. Check it came up:
+The API will be available at:
 
-```bash
-curl localhost:8080/api/v1/system/diagnostics
+```text
+http://localhost:8080
 ```
 
----
+Verify that the application is running:
+
+```bash
+curl http://localhost:8080/api/v1/system/diagnostics
+```
 
 ## API
 
-All responses are JSON. Errors always use the same envelope, so a client needs
-exactly one error parser:
+The API uses JSON for requests and responses.
+
+Errors use a consistent response structure:
 
 ```json
-{ "code": "video_private", "message": "This video is private.",
-  "timestamp": "2026-01-01T00:00:00Z", "fieldErrors": {} }
+{
+  "code": "video_private",
+  "message": "This video is private.",
+  "timestamp": "2026-01-01T00:00:00Z",
+  "fieldErrors": {}
+}
 ```
 
-`code` is stable — branch on it, never on `message`.
+The `code` field is stable and should be used by clients for error handling.
 
-### Submit a download
+Clients should not branch on the human-readable `message` field.
+
+---
+
+## Downloads
+
+### Submit a Download
+
+```http
+POST /api/v1/downloads
+Content-Type: application/json
+```
+
+Example:
 
 ```bash
-curl -X POST localhost:8080/api/v1/downloads \
-  -H 'Content-Type: application/json' \
+curl -X POST http://localhost:8080/api/v1/downloads \
+  -H "Content-Type: application/json" \
   -d '{"url":"https://youtu.be/dQw4w9WgXcQ","format":"m4a"}'
 ```
+
+Example response:
 
 ```json
 {
@@ -112,153 +236,174 @@ curl -X POST localhost:8080/api/v1/downloads \
   "durationSeconds": 213,
   "format": "m4a",
   "status": "QUEUED",
-  "progress": { "percent": 0, "downloadedBytes": null, "totalBytes": null,
-                "speedBytesPerSecond": null, "etaSeconds": null },
-  "streamUrl": null, "fileUrl": null,
+  "progress": {
+    "percent": 0,
+    "downloadedBytes": null,
+    "totalBytes": null,
+    "speedBytesPerSecond": null,
+    "etaSeconds": null
+  },
+  "streamUrl": null,
+  "fileUrl": null,
   "coverUrl": "https://i.ytimg.com/vi_webp/dQw4w9WgXcQ/maxresdefault.webp"
 }
 ```
 
-`url` accepts anything a share sheet produces: `watch?v=`, `youtu.be/`,
-`/shorts/`, `/embed/`, `/live/`, a bare 11-character id, or any of those wrapped
-in sharing text.
+### Supported URL Formats
 
-- `202 Accepted` — newly queued
-- `200 OK` — already known (queued, downloading, or in the library)
+The `url` field accepts common YouTube URL and share formats, including:
 
-**Submission is idempotent per video id.** Re-pasting a link never creates a
-duplicate, which matters because share sheets fire repeatedly and users
-double-tap. Re-pasting a *failed* link silently retries it.
-
-### Poll, retry, cancel
-
-| | |
-|---|---|
-| `GET /api/v1/downloads/{id}` | status + live progress |
-| `POST /api/v1/downloads/{id}/retry?format=m4a` | re-queue; may switch format |
-| `POST /api/v1/downloads/{id}/cancel` | kill the in-flight download |
-
-### Library
-
-| | |
-|---|---|
-| `GET /api/v1/tracks?page=0&size=20` | newest first |
-| `GET /api/v1/tracks?q=never` | search title / artist / album |
-| `GET /api/v1/tracks?status=FAILED` | filter by status |
-| `GET /api/v1/tracks/{id}` | one track |
-| `DELETE /api/v1/tracks/{id}` | remove track **and** its files |
-
-### Playback and download
-
-| | |
-|---|---|
-| `GET /api/v1/tracks/{id}/stream` | inline audio, supports `Range` |
-| `GET /api/v1/tracks/{id}/file` | same bytes as an attachment |
-| `GET /api/v1/tracks/{id}/cover` | artwork, 302 to YouTube if not cached |
-
-`stream` implements `Range` properly — `206`, `Content-Range`, `Accept-Ranges`,
-and `416` past EOF. This is not optional: **ExoPlayer and AVPlayer both open
-media with a ranged request**, and without it they fail or refuse to seek.
-
-### Status values
-
-`QUEUED` → `DOWNLOADING` → `READY` | `FAILED`
-
-A download interrupted by a server restart is reconciled to `FAILED` on the next
-boot, so the UI never shows a bar that will never move.
-
----
-
-## Design notes
-
-**Progress lives in memory, not the database.** yt-dlp emits progress several
-times a second. Persisting each tick is pure write amplification for data that
-is worthless a second later, so live progress sits in a `ConcurrentHashMap` and
-is merged into the status response. Only state transitions are persisted.
-
-**The download starts after the transaction commits.** The work is dispatched via
-an `AFTER_COMMIT` event, not a direct call. Otherwise the async worker can look
-for a row that is not committed yet, fail to find it, and silently drop the job.
-
-**Long operations hold no transaction.** Each state change is its own
-`REQUIRES_NEW` transaction in a separate bean, so a 30-minute download never
-holds a database transaction open.
-
-**Only YouTube hosts are accepted.** The URL is handed to a subprocess, so an
-open redirector or a `file://` URL must never reach it. Host allow-listing is a
-security boundary, not validation polish.
-
-**No JSON parsing of yt-dlp output.** Metadata is read from `--print` templates
-emitting `KEY=value` lines. The full info JSON is tens of kilobytes with a schema
-that shifts between releases; this contract is a handful of stable fields and
-needs no parser.
-
-**M4A is the default format.** It is a byte-for-byte copy of YouTube's native
-audio stream: no re-encode, no quality loss, no ffmpeg. MP3 re-encodes for
-legacy hardware compatibility.
-
----
-
-## Configuration
-
-Override anything with environment variables or `application.yml`.
-
-| Key | Default | Notes |
-|---|---|---|
-| `app.storage.root` | `data` | audio, covers, scratch space |
-| `app.storage.database` | `./data/library` | H2 file (leading `./` required) |
-| `app.download.max-concurrent` | `2` | parallel yt-dlp processes |
-| `app.download.timeout` | `30m` | per-download ceiling |
-| `app.download.retries` | `3` | network retries |
-| `app.cors.allowed-origins` | `*` | **pin this in production** |
-
----
-
-## Layout
-
+```text
+https://www.youtube.com/watch?v=...
+https://youtu.be/...
+https://www.youtube.com/shorts/...
+https://www.youtube.com/embed/...
+https://www.youtube.com/live/...
 ```
+
+It also accepts a bare YouTube video ID and URLs embedded within share-sheet text.
+
+### Response Status
+
+| HTTP Status    | Meaning                                            |
+| -------------- | -------------------------------------------------- |
+| `202 Accepted` | A new download was queued                          |
+| `200 OK`       | The video already exists or has an active download |
+
+Download submission is idempotent per YouTube video ID.
+
+Submitting the same video multiple times does not create duplicate library entries.
+
+If a previous attempt failed, submitting the same video again automatically retries the download.
+
+## Download Management
+
+| Method | Endpoint                                  | Description               |
+| ------ | ----------------------------------------- | ------------------------- |
+| `GET`  | `/api/v1/downloads/{id}`                  | Get status and progress   |
+| `POST` | `/api/v1/downloads/{id}/retry?format=m4a` | Retry a download          |
+| `POST` | `/api/v1/downloads/{id}/cancel`           | Cancel an active download |
+
+The retry endpoint can also be used to change the requested output format.
+
+## Download States
+
+Downloads follow the following lifecycle:
+
+```text
+QUEUED
+   |
+   v
+DOWNLOADING
+   |
+   +-------> READY
+   |
+   +-------> FAILED
+```
+
+If a download is interrupted by an application restart, it is reconciled to `FAILED` during application startup.
+
+This prevents the client from displaying a download that remains permanently stuck in `QUEUED` or `DOWNLOADING`.
+
+## Music Library
+
+| Method   | Endpoint                        | Description                  |
+| -------- | ------------------------------- | ---------------------------- |
+| `GET`    | `/api/v1/tracks?page=0&size=20` | List tracks                  |
+| `GET`    | `/api/v1/tracks?q=never`        | Search tracks                |
+| `GET`    | `/api/v1/tracks?status=FAILED`  | Filter tracks                |
+| `GET`    | `/api/v1/tracks/{id}`           | Get a track                  |
+| `DELETE` | `/api/v1/tracks/{id}`           | Delete a track and its files |
+
+Tracks are returned newest first by default.
+
+Search currently supports:
+
+* Title
+* Artist
+* Album
+
+## Playback and File Access
+
+| Method | Endpoint                     | Description                     |
+| ------ | ---------------------------- | ------------------------------- |
+| `GET`  | `/api/v1/tracks/{id}/stream` | Stream audio                    |
+| `GET`  | `/api/v1/tracks/{id}/file`   | Download audio as an attachment |
+| `GET`  | `/api/v1/tracks/{id}/cover`  | Retrieve artwork                |
+
+### HTTP Range Streaming
+
+The streaming endpoint supports HTTP byte ranges.
+
+Supported behavior includes:
+
+```text
+206 Partial Content
+Content-Range
+Accept-Ranges
+416 Range Not Satisfiable
+```
+
+This is important for mobile media players because players such as ExoPlayer and AVPlayer commonly request media using ranged HTTP requests.
+
+Range support allows clients to:
+
+* Start playback without downloading the entire file.
+* Seek within a track.
+* Resume playback efficiently.
+* Request only the required portion of a file.
+
+## Storage Layout
+
+The default storage structure is:
+
+```text
 data/
-  audio/   <uuid>.m4a        finished, servable
-  covers/  <uuid>.jpg        cached artwork
-  work/    <uuid>/           per-attempt scratch, incl. .part files
-  library.mv.db              H2 index
+├── audio/
+│   └── <uuid>.m4a
+├── covers/
+│   └── <uuid>.jpg
+├── work/
+│   └── <uuid>/
+│       └── temporary files
+└── library.mv.db
 ```
 
-Only *relative* paths are stored, so the library can be moved or mounted
-elsewhere without rewriting rows. Every path resolved from the database is
-re-validated against the library root, so a traversal bug cannot become a
-file-disclosure bug.
+### Storage Design
 
-## Tests
+Only relative paths are stored in the database.
 
-```bash
-mvn test
+This allows the entire library to be moved or mounted at a different filesystem location without rewriting database records.
+
+Paths retrieved from the database are resolved and validated against the configured library root before filesystem access.
+
+This provides an additional defense against path traversal and unintended file disclosure.
+
+## Configuration Reference
+
+Configuration can be supplied through `application.yml` or environment variables.
+
+| Configuration                 | Default          | Description                                            |
+| ----------------------------- | ---------------- | ------------------------------------------------------ |
+| `app.storage.root`            | `data`           | Root directory for audio, artwork, and temporary files |
+| `app.storage.database`        | `./data/library` | H2 database location                                   |
+| `app.download.max-concurrent` | `2`              | Maximum simultaneous yt-dlp processes                  |
+| `app.download.timeout`        | `30m`            | Maximum duration of an individual download             |
+| `app.download.retries`        | `3`              | Number of network retries                              |
+| `app.cors.allowed-origins`    | `*`              | Allowed CORS origins                                   |
+
+For production deployments, replace:
+
+```text
+*
 ```
 
-69 tests covering the parts where correctness is not obvious: share-link shapes,
-`NA` handling in yt-dlp's progress protocol, path-traversal defence, and
-filesystem-safe filename generation — plus two integration suites that run the
-real HTTP stack for byte-range delivery and download dispatch.
+with the specific origins that are allowed to access the API.
 
-Two of these exist because they caught actual bugs during development, and are
-worth keeping green:
+## Engineering Design
 
-- `TrackStreamingIntegrationTest` — ranged requests used to return **500**,
-  because `ResourceRegionHttpMessageConverter` only advertises
-  `application/octet-stream` and rejects a preset `audio/mp4`.
-- `DownloadDispatchIntegrationTest` — a track once sat in `QUEUED` forever with
-  no error, because `submit` was made non-transactional and the
-  `AFTER_COMMIT` listener stopped firing.
+### In-Memory Download Progress
 
----
+Download progress is maintained in memory rather than being persisted to the database.
 
-## Legal note
-
-This tool downloads content from YouTube. Whether that is permitted depends on
-your jurisdiction, your account, and the content itself — and redistributing or
-commercially using downloaded tracks is a different question from personal
-listening. Downloading material you do not own or have permission to use may
-breach YouTube's Terms of Service and copyright law. Check your own situation
-before deploying this anywhere other than your own machine.
-#   M u s i c P l a y e r B a c k e n d  
- 
+`yt-dlp` can emit progress updates several times per second. Persisting every update w
