@@ -1,0 +1,79 @@
+server:
+  port: 8080
+  error:
+    include-message: never
+    include-stacktrace: never
+
+spring:
+  application:
+    name: music-player
+
+  # File-backed H2: the library is a folder plus a small index, so a portable
+  # embedded database matches how this thing actually gets used. Swap the JDBC
+  # URL and credentials for Postgres when you outgrow a single-node install.
+  # The leading "./" is required: H2 2.x rejects implicitly relative file paths.
+  datasource:
+    url: jdbc:h2:file:${app.storage.database:./data/library};DB_CLOSE_ON_EXIT=FALSE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+
+  jpa:
+    hibernate:
+      # The schema is owned by the app and this is a local, disposable index.
+      ddl-auto: update
+    open-in-view: false
+    properties:
+      hibernate:
+        jdbc:
+          batch_size: 20
+
+  h2:
+    console:
+      enabled: false
+
+  servlet:
+    multipart:
+      # Uploads are not part of this API; keep the door shut.
+      max-file-size: 1MB
+      max-request-size: 1MB
+
+  threads:
+    virtual:
+      # Cheap concurrency for the many small, blocking-ish requests a player makes.
+      enabled: true
+
+app:
+  storage:
+    root: data
+    database: ./data/library
+
+  tools:
+    # Leave blank to auto-detect. Override with APP_TOOLS_FFMPEG_PATH on a server.
+    yt-dlp-path: ${YT_DLP_PATH:}
+    ffmpeg-path: ${FFMPEG_PATH:}
+    python-executable: ${PYTHON:}
+
+  download:
+    max-concurrent: 2
+    timeout: 30m
+    retries: 3
+
+  streaming:
+    # Ceiling on one audio response. The servlet default is 30s, which truncates
+    # any track slower to send than that on a mobile connection.
+    async-timeout: 10m
+
+  cors:
+    allowed-origins:
+      - "*"
+    allowed-methods:
+      - GET
+      - POST
+      - DELETE
+      - OPTIONS
+
+logging:
+  level:
+    com.pahappa.musicplayer: INFO
+    org.hibernate.SQL: WARN
